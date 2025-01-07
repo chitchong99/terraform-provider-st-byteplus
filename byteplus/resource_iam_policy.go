@@ -461,6 +461,8 @@ func (r *iamPolicyResource) removePolicy(state *iamPolicyResourceModel) diag.Dia
 		a. Extract Statement
 		b. Split Statement by Comma
 	3. Compare if slices are not equal
+
+	ASSUMPTION: The Statements are in Order
 */
 
 func (r *iamPolicyResource) comparePolicy(state *iamPolicyResourceModel) diag.Diagnostics {
