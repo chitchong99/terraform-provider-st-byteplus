@@ -452,20 +452,6 @@ func (r *iamPolicyResource) removePolicy(state *iamPolicyResourceModel) diag.Dia
 
 	return nil
 }
-
-/*
-	1. Get Original Combined Policy Document
-		a. Extract Statement
-		b. Split Statement by Comma
-	2. Get Current Policy Document of each Attached Policies
-		a. Extract Statement
-		b. Split Statement by Comma
-	3. For Each Statement in Combined Policy Document
-		For Each Statement of Attached Policies
-
-		3a. Compare if the statements are not equal
-*/
-
 /*
 	1. For each Current Attached Policy Documents
 		a. Extract Statement
