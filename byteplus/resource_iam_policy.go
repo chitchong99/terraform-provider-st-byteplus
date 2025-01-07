@@ -88,61 +88,12 @@ func (r *iamPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 	}
 }
 
-func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state *iamPolicyResourceModel
-	getStateDiags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(getStateDiags...)
-	if resp.Diagnostics.HasError() {
+// Configure adds the provider configured client to the resource.
+func (r *iamPolicyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
 		return
 	}
-
-	readPolicyDiags := r.readPolicy(state)
-	resp.Diagnostics.Append(readPolicyDiags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	listPoliciesForUser := func() error {
-		listPoliciesForUserRequest := &iam.ListAttachedUserPoliciesInput{
-			UserName: byteplus.String(state.UserName.ValueString()),
-		}
-
-		_, err := r.client.ListAttachedUserPolicies(listPoliciesForUserRequest) //TODO: missing attached user policies
-		if err != nil {
-			handleAPIError(err)
-		}
-		return nil
-	}
-
-	reconnectBackoff := backoff.NewExponentialBackOff()
-	reconnectBackoff.MaxElapsedTime = 30 * time.Second
-	err := backoff.Retry(listPoliciesForUser, reconnectBackoff)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"[API ERROR] Failed to Read Users for Group",
-			err.Error(),
-		)
-		return
-	}
-
-	// This state will be using to compare with the current state.
-	var oriState *iamPolicyResourceModel
-	getOriStateDiags := req.State.Get(ctx, &oriState)
-	resp.Diagnostics.Append(getOriStateDiags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	if len(state.Policies.Elements()) != len(oriState.Policies.Elements()) {
-		resp.Diagnostics.AddWarning("Combined policies not found.", "The combined policies attached to the user may be deleted due to human mistake or API error.")
-		state.AttachedPolicies = types.ListNull(types.StringType)
-	}
-
-	setStateDiags := resp.State.Set(ctx, &state)
-	resp.Diagnostics.Append(setStateDiags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	r.client = req.ProviderData.(byteplusClients).iamClient
 }
 
 // Create implements resource.Resource.
@@ -197,17 +148,58 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 	}
 }
 
-// Delete implements resource.Resource.
-func (r *iamPolicyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state *iamPolicyResourceModel
-	diags := req.State.Get(ctx, &state)
-	resp.Diagnostics.Append(diags...)
+	getStateDiags := req.State.Get(ctx, &state)
+	resp.Diagnostics.Append(getStateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	removePolicyDiags := r.removePolicy(state)
-	resp.Diagnostics.Append(removePolicyDiags...)
+	readPolicyDiags := r.readPolicy(state)
+	resp.Diagnostics.Append(readPolicyDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	listPoliciesForUser := func() error {
+		listPoliciesForUserRequest := &iam.ListAttachedUserPoliciesInput{
+			UserName: byteplus.String(state.UserName.ValueString()),
+		}
+
+		_, err := r.client.ListAttachedUserPolicies(listPoliciesForUserRequest) //TODO: missing attached user policies
+		if err != nil {
+			handleAPIError(err)
+		}
+		return nil
+	}
+
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	err := backoff.Retry(listPoliciesForUser, reconnectBackoff)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"[API ERROR] Failed to Read Users for Group",
+			err.Error(),
+		)
+		return
+	}
+
+	// This state will be using to compare with the current state.
+	var oriState *iamPolicyResourceModel
+	getOriStateDiags := req.State.Get(ctx, &oriState)
+	resp.Diagnostics.Append(getOriStateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if len(state.Policies.Elements()) != len(oriState.Policies.Elements()) {
+		resp.Diagnostics.AddWarning("Combined policies not found.", "The combined policies attached to the user may be deleted due to human mistake or API error.")
+		state.AttachedPolicies = types.ListNull(types.StringType)
+	}
+
+	setStateDiags := resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(setStateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -276,12 +268,20 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 }
 
-// Configure adds the provider configured client to the resource.
-func (r *iamPolicyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
+// Delete implements resource.Resource.
+func (r *iamPolicyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state *iamPolicyResourceModel
+	diags := req.State.Get(ctx, &state)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
-	r.client = req.ProviderData.(byteplusClients).iamClient
+
+	removePolicyDiags := r.removePolicy(state)
+	resp.Diagnostics.Append(removePolicyDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 }
 
 func (r *iamPolicyResource) createPolicy(plan *iamPolicyResourceModel) (policiesList []attr.Value, err error) {
@@ -343,121 +343,6 @@ func (r *iamPolicyResource) createPolicy(plan *iamPolicyResourceModel) (policies
 	reconnectBackoff := backoff.NewExponentialBackOff()
 	reconnectBackoff.MaxElapsedTime = 30 * time.Second
 	return policiesList, backoff.Retry(createPolicy, reconnectBackoff)
-}
-
-type simplePolicy struct {
-	policyName     string
-	policyDocument string
-}
-
-func (r *iamPolicyResource) getPolicyDocument(plan *iamPolicyResourceModel) (finalPolicyDocument []string, excludedPolicy []simplePolicy, err error) {
-	policyName := ""
-	currentLength := 0
-	currentPolicyDocument := ""
-	appendedPolicyDocument := make([]string, 0)
-
-	var getPolicyResponse *iam.GetPolicyOutput
-
-	for i, policy := range plan.AttachedPolicies.Elements() {
-		policyName = policy.String()
-		getPolicyRequest := &iam.GetPolicyInput{
-			PolicyType: byteplus.String("Custom"),
-			PolicyName: byteplus.String(trimStringQuotes(policyName)),
-		}
-
-		getPolicy := func() error {
-			for {
-				var err error
-				getPolicyResponse, err = r.client.GetPolicy(getPolicyRequest)
-
-				if err == nil {
-					return nil
-				}
-
-				if *getPolicyResponse.Policy.PolicyType == "System" {
-					return backoff.Permanent(err)
-				}
-
-				// If returns PolicyType "Custom", but SDK error occurs,
-				// Assumes PolicyType is "System"
-				if _, ok := err.(bytepluserr.Error); ok && *getPolicyResponse.Policy.PolicyType == "Custom" {
-					getPolicyResponse.Policy.PolicyType = byteplus.String("System")
-					continue
-				}
-			}
-		}
-
-		reconnectBackoff := backoff.NewExponentialBackOff()
-		reconnectBackoff.MaxElapsedTime = 30 * time.Second
-		backoff.Retry(getPolicy, reconnectBackoff)
-
-		if getPolicyResponse != nil && *getPolicyResponse.Policy.PolicyDocument != "" {
-			tempPolicyDocument, err := url.QueryUnescape(*getPolicyResponse.Policy.PolicyDocument)
-			if err != nil {
-				return nil, nil, err
-			}
-
-			skipCombinePolicy := false
-			// If the policy itself have more than 6144 characters, then skip the combine
-			// policy part since splitting the policy "statement" will be hitting the
-			// limitation of "maximum number of attached policies" easily.
-			if len(tempPolicyDocument) > maxLength {
-				excludedPolicy = append(excludedPolicy, simplePolicy{
-					policyName:     policyName,
-					policyDocument: tempPolicyDocument,
-				})
-				skipCombinePolicy = true
-			}
-
-			if !skipCombinePolicy {
-				var data map[string]interface{}
-				if err := json.Unmarshal([]byte(tempPolicyDocument), &data); err != nil {
-					return nil, nil, err
-				}
-
-				statementArr := data["Statement"].([]interface{})
-				statementBytes, err := json.Marshal(statementArr)
-				if err != nil {
-					return nil, nil, err
-				}
-
-				finalStatement := strings.Trim(string(statementBytes), "[]")
-
-				currentLength += len(finalStatement)
-
-				// Before further proceeding the current policy, we need to add a number of 30 to simulate the total length of completed policy to check whether it is already execeeded the max character length of 6144.
-				// Number of 30 indicates the character length of neccessary policy keyword such as "Version" and "Statement" and some JSON symbols ({}, [])
-				if (currentLength + 30) > maxLength {
-					lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
-					if lastCommaIndex >= 0 {
-						currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
-					}
-
-					appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
-					currentPolicyDocument = finalStatement + ","
-					currentLength = len(finalStatement)
-				} else {
-					currentPolicyDocument += finalStatement + ","
-				}
-			}
-
-			if i == len(plan.AttachedPolicies.Elements())-1 && (currentLength+30) <= maxLength {
-				lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
-				if lastCommaIndex >= 0 {
-					currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
-				}
-				appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
-			}
-		}
-	}
-
-	if len(appendedPolicyDocument) > 0 {
-		for _, policy := range appendedPolicyDocument {
-			finalPolicyDocument = append(finalPolicyDocument, fmt.Sprintf(`{"Version":"1","Statement":[%v]}`, policy))
-		}
-	}
-
-	return finalPolicyDocument, excludedPolicy, nil
 }
 
 func (r *iamPolicyResource) readPolicy(state *iamPolicyResourceModel) diag.Diagnostics {
@@ -574,6 +459,121 @@ func (r *iamPolicyResource) removePolicy(state *iamPolicyResourceModel) diag.Dia
 	}
 
 	return nil
+}
+
+type simplePolicy struct {
+	policyName     string
+	policyDocument string
+}
+
+func (r *iamPolicyResource) getPolicyDocument(plan *iamPolicyResourceModel) (finalPolicyDocument []string, excludedPolicy []simplePolicy, err error) {
+	policyName := ""
+	currentLength := 0
+	currentPolicyDocument := ""
+	appendedPolicyDocument := make([]string, 0)
+
+	var getPolicyResponse *iam.GetPolicyOutput
+
+	for i, policy := range plan.AttachedPolicies.Elements() {
+		policyName = policy.String()
+		getPolicyRequest := &iam.GetPolicyInput{
+			PolicyType: byteplus.String("Custom"),
+			PolicyName: byteplus.String(trimStringQuotes(policyName)),
+		}
+
+		getPolicy := func() error {
+			for {
+				var err error
+				getPolicyResponse, err = r.client.GetPolicy(getPolicyRequest)
+
+				if err == nil {
+					return nil
+				}
+
+				if *getPolicyResponse.Policy.PolicyType == "System" {
+					return backoff.Permanent(err)
+				}
+
+				// If returns PolicyType "Custom", but SDK error occurs,
+				// Assumes PolicyType is "System"
+				if _, ok := err.(bytepluserr.Error); ok && *getPolicyResponse.Policy.PolicyType == "Custom" {
+					getPolicyResponse.Policy.PolicyType = byteplus.String("System")
+					continue
+				}
+			}
+		}
+
+		reconnectBackoff := backoff.NewExponentialBackOff()
+		reconnectBackoff.MaxElapsedTime = 30 * time.Second
+		backoff.Retry(getPolicy, reconnectBackoff)
+
+		if getPolicyResponse != nil && *getPolicyResponse.Policy.PolicyDocument != "" {
+			tempPolicyDocument, err := url.QueryUnescape(*getPolicyResponse.Policy.PolicyDocument)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			skipCombinePolicy := false
+			// If the policy itself have more than 6144 characters, then skip the combine
+			// policy part since splitting the policy "statement" will be hitting the
+			// limitation of "maximum number of attached policies" easily.
+			if len(tempPolicyDocument) > maxLength {
+				excludedPolicy = append(excludedPolicy, simplePolicy{
+					policyName:     policyName,
+					policyDocument: tempPolicyDocument,
+				})
+				skipCombinePolicy = true
+			}
+
+			if !skipCombinePolicy {
+				var data map[string]interface{}
+				if err := json.Unmarshal([]byte(tempPolicyDocument), &data); err != nil {
+					return nil, nil, err
+				}
+
+				statementArr := data["Statement"].([]interface{})
+				statementBytes, err := json.Marshal(statementArr)
+				if err != nil {
+					return nil, nil, err
+				}
+
+				finalStatement := strings.Trim(string(statementBytes), "[]")
+
+				currentLength += len(finalStatement)
+
+				// Before further proceeding the current policy, we need to add a number of 30 to simulate the total length of completed policy to check whether it is already execeeded the max character length of 6144.
+				// Number of 30 indicates the character length of neccessary policy keyword such as "Version" and "Statement" and some JSON symbols ({}, [])
+				if (currentLength + 30) > maxLength {
+					lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
+					if lastCommaIndex >= 0 {
+						currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
+					}
+
+					appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
+					currentPolicyDocument = finalStatement + ","
+					currentLength = len(finalStatement)
+				} else {
+					currentPolicyDocument += finalStatement + ","
+				}
+			}
+
+			if i == len(plan.AttachedPolicies.Elements())-1 && (currentLength+30) <= maxLength {
+				lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
+				if lastCommaIndex >= 0 {
+					currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
+				}
+				appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
+			}
+		}
+	}
+
+	if len(appendedPolicyDocument) > 0 {
+		for _, policy := range appendedPolicyDocument {
+			finalPolicyDocument = append(finalPolicyDocument, fmt.Sprintf(`{"Version":"1","Statement":[%v]}`, policy))
+		}
+	}
+
+	return finalPolicyDocument, excludedPolicy, nil
 }
 
 func (r *iamPolicyResource) attachPolicyToUser(state *iamPolicyResourceModel) (err error) {

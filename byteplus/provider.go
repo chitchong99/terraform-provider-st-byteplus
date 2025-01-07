@@ -4,6 +4,9 @@ import (
 	"context"
 	"os"
 
+	"github.com/byteplus-sdk/byteplus-go-sdk-v2/byteplus"
+	"github.com/byteplus-sdk/byteplus-go-sdk-v2/byteplus/credentials"
+	"github.com/byteplus-sdk/byteplus-go-sdk-v2/byteplus/session"
 	"github.com/byteplus-sdk/byteplus-go-sdk-v2/service/iam"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -48,16 +51,17 @@ func (p *byteplusProvider) Schema(_ context.Context, _ provider.SchemaRequest, r
 			"The provider needs to be configured with the proper credentials before it can be used.",
 		Attributes: map[string]schema.Attribute{
 			"region": schema.StringAttribute{
-				Description: "The Region for BytePlus Provider. May also be provided via BYTEPLUS_REGION environment variable.",
+				Description: "Region for BytePlus API. May also be provided via BYTEPLUS_REGION environment variable.",
 				Optional:    true,
 			},
 			"access_key": schema.StringAttribute{
-				Description: "The Access Key for BytePlus Provider. May also be provided via BYTEPLUS_ACCESS_KEY environment variable.",
-				Required:    true,
+				Description: "Access Key for BytePlus API. May also be provided via BYTEPLUS_ACCESS_KEY environment variable.",
+				Optional:    true,
 			},
 			"secret_key": schema.StringAttribute{
-				Description: "The Secret Key for BytePlus Provider. May also be provided via BYTEPLUS_SECRET_KEY environment variable.",
-				Required:    true,
+				Description: "Secret Key for BytePlus API. May also be provided via BYTEPLUS_SECRET_KEY environment variable.",
+				Optional:    true,
+				Sensitive:   true,
 			},
 		},
 	}
@@ -128,18 +132,24 @@ func (p *byteplusProvider) Configure(ctx context.Context, req provider.Configure
 	if region == "" {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("region"),
-			"Unknown BytePlus region",
-			"The provider cannot create the BytePlus API client as there is an unknown configuration value for the"+
-				"BytePlus API region. Set the value statically in the configuration, or use the BYTEPLUS_REGION environment variable.",
+			"Missing BytePlus API region",
+			"The provider cannot create the BytePlus API client as there is a "+
+				"missing or empty value for the BytePlus API region. Set the "+
+				"region value in the configuration or use the BYTEPLUS_REGION "+
+				"environment variable. If either is already set, ensure the value "+
+				"is not empty.",
 		)
 	}
 
 	if accessKey == "" {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("access_key"),
-			"Unknown BytePlus access key",
-			"The provider cannot create the BytePlus API client as there is an unknown configuration value for the"+
-				"BytePlus API access key. Set the value statically in the configuration, or use the BYTEPLUS_ACCESS_KEY environment variable.",
+			"Missing BytePlus API access key",
+			"The provider cannot create the BytePlus API client as there is a "+
+				"missing or empty value for the BytePlus API access key. Set the "+
+				"access key value in the configuration or use the BYTEPLUS_ACCESS_KEY "+
+				"environment variable. If either is already set, ensure the value "+
+				"is not empty.",
 		)
 	}
 
@@ -155,6 +165,31 @@ func (p *byteplusProvider) Configure(ctx context.Context, req provider.Configure
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	clientCredentialsConfig := byteplus.NewConfig().
+		WithCredentials(credentials.NewStaticCredentials(accessKey, secretKey, "")).
+		WithRegion(region)
+
+	//BytePlus IAM Client
+	sess, err := session.NewSession(clientCredentialsConfig)
+	iamClient := iam.New(sess)
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Unable to Create AliCloud IAM API Client",
+			"An unexpected error occurred when creating the AliCloud IAM API client. "+
+				"If the error is not clear, please contact the provider developers.\n\n"+
+				"BytePlus IAM Client Error: "+err.Error(),
+		)
+		return
+	}
+
+	byteplusClients := byteplusClients{
+		iamClient: iamClient,
+	}
+
+	resp.DataSourceData = byteplusClients
+	resp.ResourceData = byteplusClients
 }
 
 func (p *byteplusProvider) DataSources(_ context.Context) []func() datasource.DataSource {
