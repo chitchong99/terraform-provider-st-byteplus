@@ -541,7 +541,7 @@ func (r *iamPolicyResource) comparePolicy(state *iamPolicyResourceModel) diag.Di
 				handleAPIError(err)
 			}
 
-			//Sometimes combined policies may be removed accidentally by human mistake or API error.
+			// Sometimes combined policies may be removed accidentally by human mistake or API error.
 			if getPolicyResponse != nil && getPolicyResponse.Policy != nil {
 				if getPolicyResponse.Policy.PolicyName != nil && getPolicyResponse.Policy.PolicyDocument != nil {
 					oriPolicyName := *getPolicyResponse.Policy.PolicyName
@@ -599,7 +599,8 @@ func (r *iamPolicyResource) comparePolicy(state *iamPolicyResourceModel) diag.Di
 			),
 		}
 	}
-
+	
+	//3. Compare if slices are not equal
 	if len(oriStatements) != len(currStatements) {
 		state.AttachedPolicies = types.ListNull(types.StringType)
 		return nil
