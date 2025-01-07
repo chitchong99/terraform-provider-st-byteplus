@@ -457,7 +457,7 @@ func (r *iamPolicyResource) removePolicy(state *iamPolicyResourceModel) diag.Dia
 		a. Extract Statement
 		b. Split Statement by Comma
 		c. Append into Slice
-	2. Get All Original Attached Policy Document and Turn into a slice
+	2. Get All Original Attached Policy Document and Turn into a Slice
 		a. Extract Statement
 		b. Split Statement by Comma
 	3. Compare if slices are not equal
@@ -471,7 +471,7 @@ func (r *iamPolicyResource) comparePolicy(state *iamPolicyResourceModel) diag.Di
 	currStatements := []string{}
 	oriStatements := []string{}
 
-	// 1. Get All Current Attached Policy Document and Combine into a slice
+	// 1. For each Current Attached Policy Documents
 	getPolicyCurr := func() error {
 		for _, currPolicyName := range state.AttachedPolicies.Elements() {
 			for _, policyType := range policyTypes {
@@ -523,7 +523,7 @@ func (r *iamPolicyResource) comparePolicy(state *iamPolicyResourceModel) diag.Di
 		}
 	}
 
-	// 2. Get All Original Attached Policy Document and Turn into a slice
+	// 2. Get All Original Attached Policy Document and Turn into a Slice
 	getPolicyOri := func() error {
 		data := make(map[string]string)
 
