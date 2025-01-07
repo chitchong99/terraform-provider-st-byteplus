@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
+	"flag"
 	"os"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
-	"main.go/byteplus"
+	"github.com/myklst/terraform-provider-st-byteplus/byteplus"
 )
 
 // Provider documentation generation.

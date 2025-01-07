@@ -127,7 +127,7 @@ func (r *iamPolicyResource) Create(ctx context.Context, req resource.CreateReque
 	)
 	state.UserName = plan.UserName
 
-	if err := r.attachPolicyToUser(state); err != nil { //TODO: missing attachuserpolicy
+	if err := r.attachPolicyToUser(state); err != nil {
 		resp.Diagnostics.AddError(
 			"[API ERROR] Failed to Attach Policy to User.",
 			err.Error(),
@@ -167,7 +167,7 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 			UserName: byteplus.String(state.UserName.ValueString()),
 		}
 
-		_, err := r.client.ListAttachedUserPolicies(listPoliciesForUserRequest) //TODO: missing attached user policies
+		_, err := r.client.ListAttachedUserPolicies(listPoliciesForUserRequest)
 		if err != nil {
 			handleAPIError(err)
 		}
@@ -185,17 +185,10 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	// This state will be using to compare with the current state.
-	var oriState *iamPolicyResourceModel
-	getOriStateDiags := req.State.Get(ctx, &oriState)
-	resp.Diagnostics.Append(getOriStateDiags...)
+	comparePolicyDiags := r.comparePolicy(state)
+	resp.Diagnostics.Append(comparePolicyDiags...)
 	if resp.Diagnostics.HasError() {
 		return
-	}
-
-	if len(state.Policies.Elements()) != len(oriState.Policies.Elements()) {
-		resp.Diagnostics.AddWarning("Combined policies not found.", "The combined policies attached to the user may be deleted due to human mistake or API error.")
-		state.AttachedPolicies = types.ListNull(types.StringType)
 	}
 
 	setStateDiags := resp.State.Set(ctx, &state)
@@ -247,7 +240,7 @@ func (r *iamPolicyResource) Update(ctx context.Context, req resource.UpdateReque
 	)
 	state.UserName = plan.UserName
 
-	if err := r.attachPolicyToUser(state); err != nil { //TODO: HAVENT IMPLEMENT
+	if err := r.attachPolicyToUser(state); err != nil {
 		resp.Diagnostics.AddError(
 			"[API ERROR] Failed to Attach Policy to User.",
 			err.Error(),
@@ -434,8 +427,7 @@ func (r *iamPolicyResource) removePolicy(state *iamPolicyResourceModel) diag.Dia
 				PolicyName: byteplus.String(data["policy_name"]),
 			}
 
-			if _, err := r.client.DetachUserPolicy(detachPolicyFromUserRequest); err != nil { //TODO: missing detach policy
-				handleAPIError(err)
+			if _, err := r.client.DetachUserPolicy(detachPolicyFromUserRequest); err != nil {
 			}
 
 			if _, err := r.client.DeletePolicy(deletePolicyRequest); err != nil {
@@ -455,6 +447,180 @@ func (r *iamPolicyResource) removePolicy(state *iamPolicyResourceModel) diag.Dia
 				"[API ERROR] Failed to Delete Policy",
 				err.Error(),
 			),
+		}
+	}
+
+	return nil
+}
+
+/*
+	1. Get Original Combined Policy Document
+		a. Extract Statement
+		b. Split Statement by Comma
+	2. Get Current Policy Document of each Attached Policies
+		a. Extract Statement
+		b. Split Statement by Comma
+	3. For Each Statement in Combined Policy Document
+		For Each Statement of Attached Policies
+
+		3a. Compare if the statements are not equal
+*/
+
+/*
+	1. For each Current Attached Policy Documents
+		a. Extract Statement
+		b. Split Statement by Comma
+		c. Append into Slice
+	2. Get All Original Attached Policy Document and Turn into a slice
+		a. Extract Statement
+		b. Split Statement by Comma
+	3. Compare if slices are not equal
+*/
+
+func (r *iamPolicyResource) comparePolicy(state *iamPolicyResourceModel) diag.Diagnostics {
+	policyDetailsState := []*policyDetail{}
+	policyTypes := []string{"Custom", "System"}
+	currStatements := []string{}
+	oriStatements := []string{}
+
+	// 1. Get All Current Attached Policy Document and Combine into a slice
+	getPolicyCurr := func() error {
+		for _, currPolicyName := range state.AttachedPolicies.Elements() {
+			for _, policyType := range policyTypes {
+				getPolicyRequest := &iam.GetPolicyInput{
+					PolicyName: byteplus.String(currPolicyName.(types.String).ValueString()),
+					PolicyType: byteplus.String(policyType),
+				}
+
+				getPolicyResponse, err := r.client.GetPolicy(getPolicyRequest)
+				if err != nil {
+					handleAPIError(err)
+					continue
+				}
+
+				// 1a. Extract Statement
+				tempPolicyDocument := *getPolicyResponse.Policy.PolicyDocument
+
+				var data map[string]interface{}
+				if err := json.Unmarshal([]byte(tempPolicyDocument), &data); err != nil {
+					return err
+				}
+
+				currStatementArr := data["Statement"].([]interface{})
+				currStatementBytes, err := json.Marshal(currStatementArr)
+				if err != nil {
+					return err
+				}
+
+				// 1b. Split Statement by Comma
+				combinedCurrStatements := strings.Trim(string(currStatementBytes), "[]")
+				currStatement := strings.Split(combinedCurrStatements, "},{")
+
+				// 1c. Append into Slice
+				currStatements = append(currStatements, currStatement...)
+			}
+		}
+		return nil
+	}
+
+	reconnectBackoff := backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	err := backoff.Retry(getPolicyCurr, reconnectBackoff)
+	if err != nil {
+		return diag.Diagnostics{
+			diag.NewErrorDiagnostic(
+				"[API ERROR] Failed to Read Current Policies.",
+				err.Error(),
+			),
+		}
+	}
+
+	// 2. Get All Original Attached Policy Document and Turn into a slice
+	getPolicyOri := func() error {
+		data := make(map[string]string)
+
+		for _, policies := range state.Policies.Elements() {
+			json.Unmarshal([]byte(policies.String()), &data)
+
+			// To Get the Combined Policy
+			getPolicyRequest := &iam.GetPolicyInput{
+				PolicyName: byteplus.String(data["policy_name"]),
+				PolicyType: byteplus.String("Custom"),
+			}
+
+			getPolicyResponse, err := r.client.GetPolicy(getPolicyRequest)
+			if err != nil {
+				handleAPIError(err)
+			}
+
+			//Sometimes combined policies may be removed accidentally by human mistake or API error.
+			if getPolicyResponse != nil && getPolicyResponse.Policy != nil {
+				if getPolicyResponse.Policy.PolicyName != nil && getPolicyResponse.Policy.PolicyDocument != nil {
+					oriPolicyName := *getPolicyResponse.Policy.PolicyName
+					oriPolicyDoc := *getPolicyResponse.Policy.PolicyDocument
+
+					policyDetail := policyDetail{
+						PolicyName:     types.StringValue(oriPolicyName),
+						PolicyDocument: types.StringValue(oriPolicyDoc),
+					}
+					policyDetailsState = append(policyDetailsState, &policyDetail)
+
+					// 2a. Extract Statement
+					var data map[string]interface{}
+					if err := json.Unmarshal([]byte(oriPolicyDoc), &data); err != nil {
+						return err
+					}
+
+					statementArr := data["Statement"].([]interface{})
+					oriStatementBytes, err := json.Marshal(statementArr)
+					if err != nil {
+						return err
+					}
+
+					// 2b. Split Statement by Comma
+					combinedOriStatements := strings.Trim(string(oriStatementBytes), "[]")
+					oriStatements = strings.Split(combinedOriStatements, "},{")
+
+					// Re-wrap each part with curly braces to restore valid JSON structure
+					for i := range oriStatements {
+						if i == 0 {
+							// Add closing brace only to the first element
+							oriStatements[i] += "}"
+						} else if i == len(oriStatements)-1 {
+							// Add opening brace only to the last element
+							oriStatements[i] = "{" + oriStatements[i]
+						} else {
+							// Add both opening and closing braces to the middle elements
+							oriStatements[i] = "{" + oriStatements[i] + "}"
+						}
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+	reconnectBackoff = backoff.NewExponentialBackOff()
+	reconnectBackoff.MaxElapsedTime = 30 * time.Second
+	err = backoff.Retry(getPolicyOri, reconnectBackoff)
+	if err != nil {
+		return diag.Diagnostics{
+			diag.NewErrorDiagnostic(
+				"[API ERROR] Failed to Read Original Policies.",
+				err.Error(),
+			),
+		}
+	}
+
+	if len(oriStatements) != len(currStatements) {
+		state.AttachedPolicies = types.ListNull(types.StringType)
+		return nil
+	}
+
+	for i := 0; i < len(oriStatements); i++ {
+		if string(oriStatements[i]) != string(currStatements[i]) { // 3a. Compare if the statements are not equal
+			state.AttachedPolicies = types.ListNull(types.StringType)
+			return nil
 		}
 	}
 
@@ -490,14 +656,14 @@ func (r *iamPolicyResource) getPolicyDocument(plan *iamPolicyResourceModel) (fin
 					return nil
 				}
 
-				if *getPolicyResponse.Policy.PolicyType == "System" {
+				if *getPolicyRequest.PolicyType == "System" {
 					return backoff.Permanent(err)
 				}
 
 				// If returns PolicyType "Custom", but SDK error occurs,
 				// Assumes PolicyType is "System"
-				if _, ok := err.(bytepluserr.Error); ok && *getPolicyResponse.Policy.PolicyType == "Custom" {
-					getPolicyResponse.Policy.PolicyType = byteplus.String("System")
+				if _, ok := err.(bytepluserr.Error); ok && *getPolicyRequest.PolicyType == "Custom" {
+					getPolicyRequest.PolicyType = byteplus.String("System")
 					continue
 				}
 			}

@@ -82,7 +82,7 @@ func (p *byteplusProvider) Configure(ctx context.Context, req provider.Configure
 		resp.Diagnostics.AddAttributeError(
 			path.Root("region"),
 			"Unknown BytePlus region",
-			"The provider cannot create the BytePlus API client as there is an unknown configuration value for the"+
+			"The provider cannot create the BytePlus API client as there is an unknown configuration value for the "+
 				"BytePlus API region. Set the value statically in the configuration, or use the BYTEPLUS_REGION environment variable.",
 		)
 	}
@@ -91,7 +91,7 @@ func (p *byteplusProvider) Configure(ctx context.Context, req provider.Configure
 		resp.Diagnostics.AddAttributeError(
 			path.Root("access_key"),
 			"Unknown BytePlus access key",
-			"The provider cannot create the BytePlus API client as there is an unknown configuration value for the"+
+			"The provider cannot create the BytePlus API client as there is an unknown configuration value for the "+
 				"BytePlus API access key. Set the value statically in the configuration, or use the BYTEPLUS_ACCESS_KEY environment variable.",
 		)
 	}
@@ -100,7 +100,7 @@ func (p *byteplusProvider) Configure(ctx context.Context, req provider.Configure
 		resp.Diagnostics.AddAttributeError(
 			path.Root("secret_key"),
 			"Unknown BytePlus secret key",
-			"The provider cannot create the BytePlus API client as there is an unknown configuration value for the"+
+			"The provider cannot create the BytePlus API client as there is an unknown configuration value for the "+
 				"BytePlus API secret key. Set the value statically in the configuration, or use the BYTEPLUS_SECRET_KEY environment variable.",
 		)
 	}
