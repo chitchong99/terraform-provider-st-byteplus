@@ -185,10 +185,17 @@ func (r *iamPolicyResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	comparePolicyDiags := r.comparePolicy(state)
-	resp.Diagnostics.Append(comparePolicyDiags...)
+	// This state will be using to compare with the current state.
+	var oriState *iamPolicyResourceModel
+	getOriStateDiags := req.State.Get(ctx, &oriState)
+	resp.Diagnostics.Append(getOriStateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	if len(state.Policies.Elements()) != len(oriState.Policies.Elements()) {
+		resp.Diagnostics.AddWarning("Combined policies not found.", "The combined policies attached to the user may be deleted due to human mistake or API error.")
+		state.AttachedPolicies = types.ListNull(types.StringType)
 	}
 
 	setStateDiags := resp.State.Set(ctx, &state)
@@ -452,169 +459,6 @@ func (r *iamPolicyResource) removePolicy(state *iamPolicyResourceModel) diag.Dia
 
 	return nil
 }
-/*
-	1. For each Current Attached Policy Documents
-		a. Extract Statement
-		b. Split Statement by Comma
-		c. Append into Slice
-	2. Get All Original Attached Policy Document and Turn into a Slice
-		a. Extract Statement
-		b. Split Statement by Comma
-	3. Compare if slices are not equal
-
-	ASSUMPTION: The Statements are in Order
-*/
-
-func (r *iamPolicyResource) comparePolicy(state *iamPolicyResourceModel) diag.Diagnostics {
-	policyDetailsState := []*policyDetail{}
-	policyTypes := []string{"Custom", "System"}
-	currStatements := []string{}
-	oriStatements := []string{}
-
-	// 1. For each Current Attached Policy Documents
-	getPolicyCurr := func() error {
-		for _, currPolicyName := range state.AttachedPolicies.Elements() {
-			for _, policyType := range policyTypes {
-				getPolicyRequest := &iam.GetPolicyInput{
-					PolicyName: byteplus.String(currPolicyName.(types.String).ValueString()),
-					PolicyType: byteplus.String(policyType),
-				}
-
-				getPolicyResponse, err := r.client.GetPolicy(getPolicyRequest)
-				if err != nil {
-					handleAPIError(err)
-					continue
-				}
-
-				// 1a. Extract Statement
-				tempPolicyDocument := *getPolicyResponse.Policy.PolicyDocument
-
-				var data map[string]interface{}
-				if err := json.Unmarshal([]byte(tempPolicyDocument), &data); err != nil {
-					return err
-				}
-
-				currStatementArr := data["Statement"].([]interface{})
-				currStatementBytes, err := json.Marshal(currStatementArr)
-				if err != nil {
-					return err
-				}
-
-				// 1b. Split Statement by Comma
-				combinedCurrStatements := strings.Trim(string(currStatementBytes), "[]")
-				currStatement := strings.Split(combinedCurrStatements, "},{")
-
-				// 1c. Append into Slice
-				currStatements = append(currStatements, currStatement...)
-			}
-		}
-		return nil
-	}
-
-	reconnectBackoff := backoff.NewExponentialBackOff()
-	reconnectBackoff.MaxElapsedTime = 30 * time.Second
-	err := backoff.Retry(getPolicyCurr, reconnectBackoff)
-	if err != nil {
-		return diag.Diagnostics{
-			diag.NewErrorDiagnostic(
-				"[API ERROR] Failed to Read Current Policies.",
-				err.Error(),
-			),
-		}
-	}
-
-	// 2. Get All Original Attached Policy Document and Turn into a Slice
-	getPolicyOri := func() error {
-		data := make(map[string]string)
-
-		for _, policies := range state.Policies.Elements() {
-			json.Unmarshal([]byte(policies.String()), &data)
-
-			// To Get the Combined Policy
-			getPolicyRequest := &iam.GetPolicyInput{
-				PolicyName: byteplus.String(data["policy_name"]),
-				PolicyType: byteplus.String("Custom"),
-			}
-
-			getPolicyResponse, err := r.client.GetPolicy(getPolicyRequest)
-			if err != nil {
-				handleAPIError(err)
-			}
-
-			// Sometimes combined policies may be removed accidentally by human mistake or API error.
-			if getPolicyResponse != nil && getPolicyResponse.Policy != nil {
-				if getPolicyResponse.Policy.PolicyName != nil && getPolicyResponse.Policy.PolicyDocument != nil {
-					oriPolicyName := *getPolicyResponse.Policy.PolicyName
-					oriPolicyDoc := *getPolicyResponse.Policy.PolicyDocument
-
-					policyDetail := policyDetail{
-						PolicyName:     types.StringValue(oriPolicyName),
-						PolicyDocument: types.StringValue(oriPolicyDoc),
-					}
-					policyDetailsState = append(policyDetailsState, &policyDetail)
-
-					// 2a. Extract Statement
-					var data map[string]interface{}
-					if err := json.Unmarshal([]byte(oriPolicyDoc), &data); err != nil {
-						return err
-					}
-
-					statementArr := data["Statement"].([]interface{})
-					oriStatementBytes, err := json.Marshal(statementArr)
-					if err != nil {
-						return err
-					}
-
-					// 2b. Split Statement by Comma
-					combinedOriStatements := strings.Trim(string(oriStatementBytes), "[]")
-					oriStatements = strings.Split(combinedOriStatements, "},{")
-
-					// Re-wrap each part with curly braces to restore valid JSON structure
-					for i := range oriStatements {
-						if i == 0 {
-							// Add closing brace only to the first element
-							oriStatements[i] += "}"
-						} else if i == len(oriStatements)-1 {
-							// Add opening brace only to the last element
-							oriStatements[i] = "{" + oriStatements[i]
-						} else {
-							// Add both opening and closing braces to the middle elements
-							oriStatements[i] = "{" + oriStatements[i] + "}"
-						}
-					}
-				}
-			}
-		}
-		return nil
-	}
-
-	reconnectBackoff = backoff.NewExponentialBackOff()
-	reconnectBackoff.MaxElapsedTime = 30 * time.Second
-	err = backoff.Retry(getPolicyOri, reconnectBackoff)
-	if err != nil {
-		return diag.Diagnostics{
-			diag.NewErrorDiagnostic(
-				"[API ERROR] Failed to Read Original Policies.",
-				err.Error(),
-			),
-		}
-	}
-	
-	//3. Compare if slices are not equal
-	if len(oriStatements) != len(currStatements) {
-		state.AttachedPolicies = types.ListNull(types.StringType)
-		return nil
-	}
-
-	for i := 0; i < len(oriStatements); i++ {
-		if string(oriStatements[i]) != string(currStatements[i]) { // 3a. Compare if the statements are not equal
-			state.AttachedPolicies = types.ListNull(types.StringType)
-			return nil
-		}
-	}
-
-	return nil
-}
 
 type simplePolicy struct {
 	policyName     string
@@ -642,7 +486,7 @@ func (r *iamPolicyResource) getPolicyDocument(plan *iamPolicyResourceModel) (fin
 				getPolicyResponse, err = r.client.GetPolicy(getPolicyRequest)
 
 				if err == nil {
-					return nil
+					break
 				}
 
 				if *getPolicyRequest.PolicyType == "System" {
@@ -651,11 +495,16 @@ func (r *iamPolicyResource) getPolicyDocument(plan *iamPolicyResourceModel) (fin
 
 				// If returns PolicyType "Custom", but SDK error occurs,
 				// Assumes PolicyType is "System"
-				if _, ok := err.(bytepluserr.Error); ok && *getPolicyRequest.PolicyType == "Custom" {
+				if _, ok := err.(bytepluserr.Error); !ok {
+					return err
+				}
+
+				if *getPolicyRequest.PolicyType == "Custom" {
 					getPolicyRequest.PolicyType = byteplus.String("System")
 					continue
 				}
 			}
+			return nil
 		}
 
 		reconnectBackoff := backoff.NewExponentialBackOff()
@@ -713,10 +562,7 @@ func (r *iamPolicyResource) getPolicyDocument(plan *iamPolicyResourceModel) (fin
 			}
 
 			if i == len(plan.AttachedPolicies.Elements())-1 && (currentLength+30) <= maxLength {
-				lastCommaIndex := strings.LastIndex(currentPolicyDocument, ",")
-				if lastCommaIndex >= 0 {
-					currentPolicyDocument = currentPolicyDocument[:lastCommaIndex] + currentPolicyDocument[lastCommaIndex+1:]
-				}
+				currentPolicyDocument = strings.TrimSuffix(currentPolicyDocument, ",")
 				appendedPolicyDocument = append(appendedPolicyDocument, currentPolicyDocument)
 			}
 		}
